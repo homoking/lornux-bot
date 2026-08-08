@@ -1,0 +1,31 @@
+# Environments
+.env
+.venv/
+venv/
+env/
+ENV/
+
+# Database files
+*.sqlite
+*.sqlite3
+*.db
+bot_database.sqlite
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# IDE and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# OS generated files
+.DS_Store
+Thumbs.db
