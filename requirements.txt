@@ -1,0 +1,43 @@
+# --- Core ---
+pydantic==2.9.2
+pydantic-settings==2.6.1
+
+# --- Database ---
+sqlalchemy==2.0.36
+alembic==1.14.0
+asyncpg==0.30.0          # runtime (async engine)
+psycopg2-binary==2.9.10  # alembic migrations (sync)
+pgvector==0.3.6
+
+# --- Task queue ---
+celery[redis]==5.4.0
+redis==5.2.1
+
+# --- Content collection ---
+feedparser==6.0.11
+httpx==0.27.2
+
+# --- Embeddings (local, free, no API cost) ---
+sentence-transformers==3.3.1
+torch==2.5.1              # CPU build is fine; see README for install notes
+
+# --- LLM providers (free tiers) ---
+google-genai==1.2.0        # Gemini — verify against current docs, SDK evolves fast
+groq==0.13.1                # Groq fallback (OpenAI-compatible JSON mode)
+
+# --- Telegram bot (Bot API) ---
+aiogram==3.15.0
+
+# --- Telegram channel collection via MTProto (فاز ۲، اختیاری) ---
+# فقط اگر MTPROTO_ENABLED=true است لازم است. اگر این فیچر را استفاده نمی‌کنید،
+# می‌توانید این خط را کامنت کنید — بقیه‌ی پروژه بدونش کار می‌کند (lazy import).
+telethon==1.36.0
+
+# --- Admin API (فاز آخر) ---
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+
+# --- Utilities ---
+tenacity==9.0.0
+python-dotenv==1.0.1
+loguru==0.7.3
