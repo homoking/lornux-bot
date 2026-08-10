@@ -35,6 +35,139 @@ def extract_html_tags(text_div):
             tag.attrs = {}
     return "".join(str(item) for item in text_div.contents).strip()
 
+def remove_source_watermark(html_text: str, username: str):
+    """
+    Detect and remove source-channel watermark lines.
+
+    Detects:
+    - @username
+    - t.me/username
+    - https://t.me/username
+    - telegram.me/username
+    - source-channel links hidden inside <a href="...">
+    - bare username in short footer-like lines near the end
+
+    Returns:
+        (cleaned_html, watermark_detected)
+    """
+
+    if not html_text:
+        return "", False
+
+    username = username.strip().lstrip("@")
+
+    if not username:
+        return html_text, False
+
+    escaped_username = re.escape(username)
+
+    strong_patterns = [
+        re.compile(
+            rf"(?<![\w])@{escaped_username}\b",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"(?:https?://)?(?:www\.)?"
+            rf"(?:t\.me|telegram\.me)/(?:s/)?"
+            rf"{escaped_username}\b(?:/\d+)?/?",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"tg://resolve\?domain={escaped_username}\b",
+            re.IGNORECASE,
+        ),
+    ]
+
+    bare_username_pattern = re.compile(
+        rf"(?<![\w@]){escaped_username}(?![\w])",
+        re.IGNORECASE,
+    )
+
+    lines = html_text.splitlines()
+
+    # چهار خط آخر معمولاً محل footer/watermark هستند.
+    nonempty_indices = [
+        index
+        for index, line in enumerate(lines)
+        if BeautifulSoup(
+            line,
+            "html.parser",
+        ).get_text(" ", strip=True)
+    ]
+
+    footer_indices = set(nonempty_indices[-4:])
+
+    cleaned_lines = []
+    detected = False
+
+    for index, line in enumerate(lines):
+        fragment = BeautifulSoup(
+            line,
+            "html.parser",
+        )
+
+        visible_text = fragment.get_text(
+            " ",
+            strip=True,
+        )
+
+        hrefs = [
+            tag.get("href", "")
+            for tag in fragment.find_all("a")
+            if tag.get("href")
+        ]
+
+        # @username یا لینک مستقیم/مخفی کانال
+        strong_hit = any(
+            pattern.search(visible_text)
+            or any(
+                pattern.search(href)
+                for href in hrefs
+            )
+            for pattern in strong_patterns
+        )
+
+        # username بدون @ را فقط در footerهای کوتاه تشخیص بده
+        bare_footer_hit = (
+            index in footer_indices
+            and bool(
+                bare_username_pattern.search(
+                    visible_text
+                )
+            )
+            and len(visible_text) <= 80
+            and len(visible_text.split()) <= 8
+        )
+
+        if strong_hit or bare_footer_hit:
+            detected = True
+            continue
+
+        cleaned_lines.append(line)
+
+    cleaned = "\n".join(cleaned_lines)
+
+    # فاصله‌های اضافی بعد از حذف footer
+    cleaned = re.sub(
+        r"\n{3,}",
+        "\n\n",
+        cleaned,
+    ).strip()
+
+    # اگر حذف یک خط باعث نامتوازن‌شدن HTML شده باشد،
+    # BeautifulSoup آن را repair می‌کند.
+    repaired = BeautifulSoup(
+        cleaned,
+        "html.parser",
+    )
+
+    cleaned = "".join(
+        str(item)
+        for item in repaired.contents
+    ).strip()
+
+    return cleaned, detected
+
 async def fetch_channel_posts(session: aiohttp.ClientSession, username: str, last_id: int):
     """استخراج پست‌های جدید به همراه مدیا"""
     url = f"https://t.me/s/{username}"
@@ -136,8 +269,24 @@ async def scraper_loop(bot: Bot):
                         if post["id"] > highest_id: highest_id = post["id"]
                         
                         internal_id = str(uuid.uuid4())[:8]
-                        header = MSG["source_header"].format(username=channel["username"], link=post["link"])
-                        final_caption = f"{header}{post['text']}"
+
+                        clean_text, watermark_detected = remove_source_watermark(
+                            post["text"],
+                            channel["username"],
+                        )
+
+                        if watermark_detected:
+                            watermark_status = "🧹 واترمارک شناسایی شد"
+                        else:
+                            watermark_status = "ℹ️ واترمارک شناسایی نشد"
+
+                        header = MSG["source_header"].format(
+                            username=channel["username"],
+                            link=post["link"],
+                            watermark_status=watermark_status,
+                        )
+
+                        final_caption = f"{header}{clean_text}"
                         
                         media_bytes = None
                         if post["file_url"]:

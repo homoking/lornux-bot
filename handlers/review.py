@@ -67,26 +67,131 @@ async def clean_pending_posts(
                 p["admin_id"],
             )
 
+def extract_review_payload(message: Message):
+    """
+    Extract clean post content and reusable Telegram media IDs
+    before deleting the moderation message.
+    """
+
+    content = (
+        message.html_text
+        or message.caption
+        or ""
+    )
+
+    # Header منبع/لینک/واترمارک از محتوای واقعی جدا می‌شود.
+    parts = content.split(
+        "\n\n",
+        1,
+    )
+
+    clean_content = (
+        parts[1]
+        if len(parts) > 1
+        else content
+    )
+
+    media_type = None
+    media_file_id = None
+
+    if message.photo:
+        media_type = "photo"
+        media_file_id = message.photo[-1].file_id
+
+    elif message.video:
+        media_type = "video"
+        media_file_id = message.video.file_id
+
+    return (
+        clean_content,
+        media_type,
+        media_file_id,
+    )
+
 @router.callback_query(F.data.startswith("reject_"))
-async def reject_post(callback: CallbackQuery, bot: Bot):
+async def reject_post(
+    callback: CallbackQuery,
+    bot: Bot,
+):
     internal_id = callback.data.split("_")[1]
-    await clean_pending_posts(bot, internal_id, exclude_admin=callback.from_user.id)
-    await crud.log_action("REJECTED", callback.from_user.id, "unknown")
-    await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.reply(MSG["post_rejected"])
+
+    await crud.log_action(
+        "REJECTED",
+        callback.from_user.id,
+        "unknown",
+    )
+
+    # اول callback را answer کن چون خود پیام قرار است حذف شود.
+    try:
+        await callback.answer(
+            "❌ پست رد شد.",
+        )
+    except TelegramAPIError:
+        pass
+
+    # پیام از چت همه Adminها، شامل Admin فعلی، حذف می‌شود.
+    await clean_pending_posts(
+        bot,
+        internal_id,
+    )
 
 @router.callback_query(F.data.startswith("approve_"))
-async def approve_post(callback: CallbackQuery, bot: Bot, state: FSMContext):
+async def approve_post(
+    callback: CallbackQuery,
+    bot: Bot,
+    state: FSMContext,
+):
     internal_id = callback.data.split("_")[1]
-    await clean_pending_posts(bot, internal_id, exclude_admin=callback.from_user.id)
-    await crud.log_action("APPROVED", callback.from_user.id, "unknown")
-    
+
+    # قبل از حذف پیام، اطلاعات مورد نیاز را نگه می‌داریم.
+    (
+        original_content,
+        media_type,
+        media_file_id,
+    ) = extract_review_payload(
+        callback.message
+    )
+
+    await crud.log_action(
+        "APPROVED",
+        callback.from_user.id,
+        "unknown",
+    )
+
     tags = await crud.get_hashtags()
-    await state.update_data(selected_tags=[], internal_id=internal_id)
-    
-    await callback.message.reply(
-        MSG["select_hashtags"],
-        reply_markup=hashtag_selector_kb(internal_id, tags, [])
+
+    await state.update_data(
+        selected_tags=[],
+        internal_id=internal_id,
+        original_content=original_content,
+        media_type=media_type,
+        media_file_id=media_file_id,
+        edited_text=None,
+        publishing=False,
+    )
+
+    # Selector را مستقل از پیام اصلی می‌فرستیم.
+    await bot.send_message(
+        chat_id=callback.from_user.id,
+        text=MSG["select_hashtags"],
+        reply_markup=hashtag_selector_kb(
+            internal_id,
+            tags,
+            [],
+        ),
+    )
+
+    try:
+        await callback.answer(
+            "✅ پست تایید شد.",
+        )
+    except TelegramAPIError:
+        pass
+
+    # حالا نسخه پست از چت همه Adminها حذف می‌شود.
+    await clean_pending_posts(
+        bot,
+        internal_id,
     )
 
 # ==================== ✏️ بخش اضافه شده: مدیریت ویرایش ====================
@@ -216,42 +321,57 @@ async def final_send_post(
     selected_tags = data.get("selected_tags", [])
     edited_text = data.get("edited_text")
 
+    media_type = data.get("media_type")
+    media_file_id = data.get("media_file_id")
+    stored_content = data.get("original_content")
+
+    # برای مسیر Edit قدیمی همچنان fallback داریم.
     original_msg = callback.message.reply_to_message
-
-    if not original_msg:
-        logger.warning(
-            "Publish failed because original message was not found. "
-            "user_id=%s",
-            callback.from_user.id,
-        )
-
-        await state.update_data(publishing=False)
-
-        try:
-            await callback.answer(
-                "پیام اصلی پیدا نشد. لطفاً دوباره تلاش کنید.",
-                show_alert=True,
-            )
-        except TelegramAPIError:
-            pass
-
-        return
 
     if edited_text:
         clean_content = edited_text
-    else:
+
+    elif stored_content is not None:
+        clean_content = stored_content
+
+    elif original_msg:
         content = (
             original_msg.html_text
             or original_msg.caption
             or ""
         )
 
-        parts = content.split("\n\n", 1)
+        parts = content.split(
+            "\n\n",
+            1,
+        )
+
         clean_content = (
             parts[1]
             if len(parts) > 1
             else content
         )
+
+    else:
+        logger.warning(
+            "Publish failed because post content was not found. "
+            "user_id=%s",
+            callback.from_user.id,
+        )
+
+        await state.update_data(
+            publishing=False
+        )
+
+        try:
+            await callback.answer(
+                "اطلاعات پست پیدا نشد. لطفاً دوباره تلاش کنید.",
+                show_alert=True,
+            )
+        except TelegramAPIError:
+            pass
+
+        return
 
     footer = await crud.get_footer()
     tags_str = " ".join(selected_tags)
@@ -268,14 +388,24 @@ async def final_send_post(
         # -----------------------------
         # انتشار در کانال
         # -----------------------------
-        if original_msg.text:
-            await bot.send_message(
+        if media_type == "photo" and media_file_id:
+            await bot.send_photo(
                 chat_id=TARGET_CHANNEL_ID,
-                text=final_text,
+                photo=media_file_id,
+                caption=final_text,
                 parse_mode="HTML",
             )
 
-        else:
+        elif media_type == "video" and media_file_id:
+            await bot.send_video(
+                chat_id=TARGET_CHANNEL_ID,
+                video=media_file_id,
+                caption=final_text,
+                parse_mode="HTML",
+            )
+
+        # fallback برای workflow قدیمی Edit
+        elif original_msg and not original_msg.text:
             await bot.copy_message(
                 chat_id=TARGET_CHANNEL_ID,
                 from_chat_id=original_msg.chat.id,
@@ -283,6 +413,13 @@ async def final_send_post(
                 caption=final_text,
                 parse_mode="HTML",
                 reply_markup=None,
+            )
+
+        else:
+            await bot.send_message(
+                chat_id=TARGET_CHANNEL_ID,
+                text=final_text,
+                parse_mode="HTML",
             )
 
     except TelegramRetryAfter as exc:
@@ -422,18 +559,32 @@ async def final_send_post(
         callback.from_user.id,
     )
 
+    internal_id = data.get("internal_id")
+
+    # هر pending message احتمالی باقی‌مانده را پاک کن.
+    if internal_id:
+        await clean_pending_posts(
+            bot,
+            internal_id,
+        )
+
     try:
-        await callback.message.edit_text(
-            MSG["post_published"]
+        await callback.answer(
+            "✅ پست با موفقیت منتشر شد."
         )
-    except TelegramBadRequest as exc:
-        logger.warning(
-            "Post published but confirmation message could not be edited: %s",
-            exc,
-        )
+    except TelegramAPIError:
+        pass
+
+    # خود پیام انتخاب هشتگ هم حذف شود.
+    try:
+        await callback.message.delete()
+
+    except (TelegramBadRequest, TelegramNotFound):
+        pass
+
     except TelegramAPIError as exc:
         logger.warning(
-            "Post published but confirmation message failed: %s",
+            "Could not delete final moderation message: %s",
             exc,
         )
 

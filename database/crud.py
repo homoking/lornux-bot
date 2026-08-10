@@ -64,18 +64,71 @@ async def add_pending_post(internal_id: str, admin_id: int, msg_id: int):
         )
         await db.commit()
 
-async def get_and_delete_pending_posts(internal_id: str, exclude_admin_id: Optional[int] = None) -> List[Dict]:
+async def get_and_delete_pending_posts(
+    internal_id: str,
+    exclude_admin_id: Optional[int] = None,
+) -> List[Dict]:
+
     async with aiosqlite.connect(DB_PATH) as db:
-        query = "SELECT admin_id, telegram_message_id FROM pending_posts WHERE internal_post_id=?"
-        params = [internal_id]
-        if exclude_admin_id:
-            query += " AND admin_id != ?"
-            params.append(exclude_admin_id)
-        async with db.execute(query, params) as cursor:
+
+        if exclude_admin_id is not None:
+
+            select_query = """
+                SELECT admin_id, telegram_message_id
+                FROM pending_posts
+                WHERE internal_post_id = ?
+                  AND admin_id != ?
+            """
+
+            delete_query = """
+                DELETE FROM pending_posts
+                WHERE internal_post_id = ?
+                  AND admin_id != ?
+            """
+
+            params = (
+                internal_id,
+                exclude_admin_id,
+            )
+
+        else:
+
+            select_query = """
+                SELECT admin_id, telegram_message_id
+                FROM pending_posts
+                WHERE internal_post_id = ?
+            """
+
+            delete_query = """
+                DELETE FROM pending_posts
+                WHERE internal_post_id = ?
+            """
+
+            params = (
+                internal_id,
+            )
+
+        async with db.execute(
+            select_query,
+            params,
+        ) as cursor:
+
             rows = await cursor.fetchall()
-        await db.execute("DELETE FROM pending_posts WHERE internal_post_id=?", (internal_id,))
+
+        await db.execute(
+            delete_query,
+            params,
+        )
+
         await db.commit()
-        return [{"admin_id": r[0], "message_id": r[1]} for r in rows]
+
+        return [
+            {
+                "admin_id": row[0],
+                "message_id": row[1],
+            }
+            for row in rows
+        ]
 
 async def get_hashtags() -> List[str]:
     async with aiosqlite.connect(DB_PATH) as db:

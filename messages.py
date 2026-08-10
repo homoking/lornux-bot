@@ -11,7 +11,11 @@ MSG = {
     "btn_reject": "❌ رد کردن",
     "btn_edit": "✏️ ویرایش",
     "btn_final_send": "🚀 تایید نهایی و ارسال",
-    "source_header": "📥 منبع: @{username}\n🔗 لینک پست: {link}\n\n",
+    "source_header": (
+    "📥 منبع: @{username}\n"
+    "🔗 لینک پست: {link}\n"
+    "{watermark_status}\n\n"
+    ),
     
     "menu_channels_text": "📢 **بخش مدیریت کانال‌ها**\nیکی از گزینه‌ها را انتخاب کنید:",
     "btn_add_channel": "➕ افزودن کانال",
