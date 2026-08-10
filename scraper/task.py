@@ -1,14 +1,24 @@
 import asyncio
+import logging
 import aiohttp
 from bs4 import BeautifulSoup
 import uuid
 import re
 from aiogram import Bot
+from aiogram.exceptions import (
+    TelegramAPIError,
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramNetworkError,
+    TelegramRetryAfter,
+)
 from aiogram.types import BufferedInputFile
 from config import SCRAPE_INTERVAL, OWNER_IDS
 from database import crud
 from messages import MSG
 from keyboards.builders import review_kb
+
+logger = logging.getLogger(__name__)
 
 def extract_html_tags(text_div):
     """حفظ فرمت‌هایی مثل بولد و لینک بر اساس نمونه کد شما"""
@@ -66,8 +76,34 @@ async def fetch_channel_posts(session: aiohttp.ClientSession, username: str, las
                     "file_type": file_type
                 })
             return posts
-    except Exception as e:
-        print(f"Scraper error for {username}: {e}")
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Scraper timeout for channel @%s",
+            username,
+        )
+        return []
+
+    except aiohttp.ClientError as exc:
+        logger.warning(
+            "HTTP error while scraping @%s: %r",
+            username,
+            exc,
+        )
+        return []
+
+    except (ValueError, TypeError) as exc:
+        logger.warning(
+            "Invalid scraped data for @%s: %r",
+            username,
+            exc,
+        )
+        return []
+
+    except Exception:
+        logger.exception(
+            "Unexpected scraper error for @%s",
+            username,
+        )
         return []
 
 async def scraper_loop(bot: Bot):
@@ -124,15 +160,64 @@ async def scraper_loop(bot: Bot):
                                     sent_msg = await bot.send_message(admin_id, final_caption, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
                                 
                                 await crud.add_pending_post(internal_id, admin_id, sent_msg.message_id)
+                            except TelegramRetryAfter as exc:
+                                logger.warning(
+                                    "Rate limited while sending scraped post to admin %s. "
+                                    "retry_after=%s",
+                                    admin_id,
+                                    exc.retry_after,
+                                )
+
+                            except TelegramForbiddenError:
+                                logger.warning(
+                                    "Cannot send scraped post to admin %s. "
+                                    "Bot may be blocked or chat is unavailable.",
+                                    admin_id,
+                                )
+
+                            except TelegramBadRequest as exc:
+                                logger.warning(
+                                    "Bad Telegram request while sending scraped post "
+                                    "to admin %s: %s",
+                                    admin_id,
+                                    exc,
+                                )
+
+                            except TelegramNetworkError as exc:
+                                logger.warning(
+                                    "Network error while sending scraped post "
+                                    "to admin %s: %s",
+                                    admin_id,
+                                    exc,
+                                )
+
+                            except TelegramAPIError as exc:
+                                logger.warning(
+                                    "Telegram API error while sending scraped post "
+                                    "to admin %s: %s",
+                                    admin_id,
+                                    exc,
+                                )
+
                             except Exception:
-                                pass 
+                                logger.exception(
+                                    "Unexpected error while sending scraped post "
+                                    "to admin %s",
+                                    admin_id,
+                                )
                         
                         await crud.log_action("SCRAPED", 0, channel["username"])
                     
                     if highest_id > channel["last_post_id"]:
                         await crud.update_channel_last_id(channel["id"], highest_id)
                         
-        except Exception as e:
-            print(f"Loop error: {e}")
+        except asyncio.CancelledError:
+            logger.info("Scraper loop was cancelled.")
+            raise
+
+        except Exception:
+            logger.exception(
+                "Unexpected error in scraper loop."
+            )
             
         await asyncio.sleep(SCRAPE_INTERVAL)
