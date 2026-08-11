@@ -16,7 +16,8 @@ MSG = {
     "🔗 لینک پست: {link}\n"
     "{watermark_status}\n\n"
     ),
-    
+    "btn_confirm_reject": "🗑 بله، پست رد و حذف شود",
+    "btn_cancel_reject": "↩️ خیر، بازگشت",
     "menu_channels_text": "📢 **بخش مدیریت کانال‌ها**\nیکی از گزینه‌ها را انتخاب کنید:",
     "btn_add_channel": "➕ افزودن کانال",
     "btn_list_channels": "📋 لیست کانال‌ها",

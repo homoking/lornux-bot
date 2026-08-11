@@ -42,6 +42,23 @@ def review_kb(internal_id: str) -> InlineKeyboardMarkup:
     builder.adjust(2, 1)
     return builder.as_markup()
 
+def reject_confirm_kb(internal_id: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+
+    builder.button(
+        text=MSG["btn_confirm_reject"],
+        callback_data=f"confirm_reject_{internal_id}",
+    )
+
+    builder.button(
+        text=MSG["btn_cancel_reject"],
+        callback_data=f"cancel_reject_{internal_id}",
+    )
+
+    builder.adjust(1, 1)
+
+    return builder.as_markup()
+
 def hashtag_selector_kb(internal_id: str, tags: list, selected: list) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for tag in tags:

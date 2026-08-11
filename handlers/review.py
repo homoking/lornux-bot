@@ -13,7 +13,11 @@ from aiogram.exceptions import (
 )
 
 from messages import MSG
-from keyboards.builders import hashtag_selector_kb
+from keyboards.builders import (
+    review_kb,
+    hashtag_selector_kb,
+    reject_confirm_kb,
+)
 from database import crud
 from config import TARGET_CHANNEL_ID
 from utils.states import BotStates
@@ -111,29 +115,140 @@ def extract_review_payload(message: Message):
 @router.callback_query(F.data.startswith("reject_"))
 async def reject_post(
     callback: CallbackQuery,
-    bot: Bot,
 ):
-    internal_id = callback.data.split("_")[1]
+    """
+    First step of rejecting a post.
 
-    await crud.log_action(
-        "REJECTED",
-        callback.from_user.id,
-        "unknown",
+    Nothing is deleted here.
+    Only the inline keyboard of the same message
+    is changed to a confirmation menu.
+    """
+
+    internal_id = callback.data.removeprefix("reject_")
+
+    try:
+        await callback.message.edit_reply_markup(
+            reply_markup=reject_confirm_kb(
+                internal_id
+            )
+        )
+
+        await callback.answer(
+            "برای رد کردن پست، حذف نهایی را تایید کنید."
+        )
+
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            logger.warning(
+                "Could not show reject confirmation. "
+                "internal_id=%s error=%s",
+                internal_id,
+                exc,
+            )
+
+    except TelegramAPIError as exc:
+        logger.warning(
+            "Telegram error while showing reject confirmation. "
+            "internal_id=%s error=%s",
+            internal_id,
+            exc,
+        )
+
+
+@router.callback_query(
+    F.data.startswith("cancel_reject_")
+)
+async def cancel_reject_post(
+    callback: CallbackQuery,
+):
+    """
+    Cancel rejection and restore the original moderation buttons.
+    """
+
+    internal_id = callback.data.removeprefix(
+        "cancel_reject_"
     )
 
-    # اول callback را answer کن چون خود پیام قرار است حذف شود.
     try:
-        await callback.answer(
-            "❌ پست رد شد.",
+        await callback.message.edit_reply_markup(
+            reply_markup=review_kb(
+                internal_id
+            )
         )
+
+        await callback.answer(
+            "رد کردن پست لغو شد."
+        )
+
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            logger.warning(
+                "Could not restore review keyboard. "
+                "internal_id=%s error=%s",
+                internal_id,
+                exc,
+            )
+
+    except TelegramAPIError as exc:
+        logger.warning(
+            "Telegram error while restoring review keyboard. "
+            "internal_id=%s error=%s",
+            internal_id,
+            exc,
+        )
+
+
+@router.callback_query(
+    F.data.startswith("confirm_reject_")
+)
+async def confirm_reject_post(
+    callback: CallbackQuery,
+    bot: Bot,
+):
+    """
+    Actually reject the post after explicit confirmation.
+    """
+
+    internal_id = callback.data.removeprefix(
+        "confirm_reject_"
+    )
+
+    try:
+        # اول callback را جواب می‌دهیم.
+        await callback.answer(
+            "❌ پست رد شد."
+        )
+
     except TelegramAPIError:
         pass
 
-    # پیام از چت همه Adminها، شامل Admin فعلی، حذف می‌شود.
-    await clean_pending_posts(
-        bot,
-        internal_id,
-    )
+    try:
+        await crud.log_action(
+            "REJECTED",
+            callback.from_user.id,
+            "unknown",
+        )
+
+        # حالا نسخه پست از چت تمام Adminها
+        # شامل Admin فعلی حذف می‌شود.
+        await clean_pending_posts(
+            bot,
+            internal_id,
+        )
+
+        logger.info(
+            "Post rejected. internal_id=%s admin_id=%s",
+            internal_id,
+            callback.from_user.id,
+        )
+
+    except Exception:
+        logger.exception(
+            "Unexpected error while rejecting post. "
+            "internal_id=%s admin_id=%s",
+            internal_id,
+            callback.from_user.id,
+        )
 
 @router.callback_query(F.data.startswith("approve_"))
 async def approve_post(
@@ -141,21 +256,18 @@ async def approve_post(
     bot: Bot,
     state: FSMContext,
 ):
-    internal_id = callback.data.split("_")[1]
+    internal_id = callback.data.removeprefix(
+        "approve_"
+    )
 
-    # قبل از حذف پیام، اطلاعات مورد نیاز را نگه می‌داریم.
+    # اطلاعات پست را قبل از ادامه workflow
+    # برای مرحله انتشار نهایی ذخیره می‌کنیم.
     (
         original_content,
         media_type,
         media_file_id,
     ) = extract_review_payload(
         callback.message
-    )
-
-    await crud.log_action(
-        "APPROVED",
-        callback.from_user.id,
-        "unknown",
     )
 
     tags = await crud.get_hashtags()
@@ -170,29 +282,104 @@ async def approve_post(
         publishing=False,
     )
 
-    # Selector را مستقل از پیام اصلی می‌فرستیم.
-    await bot.send_message(
-        chat_id=callback.from_user.id,
-        text=MSG["select_hashtags"],
-        reply_markup=hashtag_selector_kb(
-            internal_id,
-            tags,
-            [],
-        ),
-    )
-
     try:
-        await callback.answer(
-            "✅ پست تایید شد.",
+        await crud.log_action(
+            "APPROVED",
+            callback.from_user.id,
+            "unknown",
         )
-    except TelegramAPIError:
-        pass
 
-    # حالا نسخه پست از چت همه Adminها حذف می‌شود.
+    except Exception:
+        logger.exception(
+            "Could not log APPROVED action. "
+            "internal_id=%s admin_id=%s",
+            internal_id,
+            callback.from_user.id,
+        )
+
+    # نسخه پست را از چت سایر Adminها حذف می‌کنیم،
+    # ولی پیام Admin فعلی باقی می‌ماند.
     await clean_pending_posts(
         bot,
         internal_id,
+        exclude_admin=callback.from_user.id,
     )
+
+    try:
+        # نکته اصلی:
+        # پیام جدید نمی‌فرستیم.
+        # فقط keyboard همین پست را به selector هشتگ تبدیل می‌کنیم.
+        await callback.message.edit_reply_markup(
+            reply_markup=hashtag_selector_kb(
+                internal_id,
+                tags,
+                [],
+            )
+        )
+
+        await callback.answer(
+            "✅ تایید شد؛ هشتگ‌ها را انتخاب کنید."
+        )
+
+    except TelegramBadRequest as exc:
+        if "message is not modified" in str(exc).lower():
+            logger.debug(
+                "Hashtag selector is already visible. "
+                "internal_id=%s",
+                internal_id,
+            )
+
+            try:
+                await callback.answer()
+            except TelegramAPIError:
+                pass
+
+        else:
+            logger.warning(
+                "Could not show hashtag selector. "
+                "internal_id=%s error=%s",
+                internal_id,
+                exc,
+            )
+
+            try:
+                await callback.answer(
+                    "نمایش هشتگ‌ها با خطا مواجه شد.",
+                    show_alert=True,
+                )
+            except TelegramAPIError:
+                pass
+
+    except TelegramAPIError as exc:
+        logger.warning(
+            "Telegram error while opening hashtag selector. "
+            "internal_id=%s error=%s",
+            internal_id,
+            exc,
+        )
+
+        try:
+            await callback.answer(
+                "خطای تلگرام هنگام نمایش هشتگ‌ها.",
+                show_alert=True,
+            )
+        except TelegramAPIError:
+            pass
+
+    except Exception:
+        logger.exception(
+            "Unexpected error while opening hashtag selector. "
+            "internal_id=%s",
+            internal_id,
+        )
+
+        try:
+            await callback.answer(
+                "خطای غیرمنتظره هنگام تایید پست.",
+                show_alert=True,
+            )
+        except TelegramAPIError:
+            pass
 
 # ==================== ✏️ بخش اضافه شده: مدیریت ویرایش ====================
 @router.callback_query(F.data.startswith("edit_"))
@@ -561,13 +748,6 @@ async def final_send_post(
 
     internal_id = data.get("internal_id")
 
-    # هر pending message احتمالی باقی‌مانده را پاک کن.
-    if internal_id:
-        await clean_pending_posts(
-            bot,
-            internal_id,
-        )
-
     try:
         await callback.answer(
             "✅ پست با موفقیت منتشر شد."
@@ -575,22 +755,11 @@ async def final_send_post(
     except TelegramAPIError:
         pass
 
-    # خود پیام انتخاب هشتگ هم حذف شود.
-    try:
-        await callback.message.delete()
-
-    except (TelegramBadRequest, TelegramNotFound):
-        pass
-
-    except TelegramAPIError as exc:
-        logger.warning(
-            "Could not delete final moderation message: %s",
-            exc,
+    if internal_id:
+        await clean_pending_posts(
+            bot,
+            internal_id,
         )
 
-    await state.clear()
 
-    try:
-        await callback.answer()
-    except TelegramAPIError:
-        pass
+    await state.clear()
