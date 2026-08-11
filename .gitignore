@@ -29,3 +29,7 @@ __pycache__/
 # OS generated files
 .DS_Store
 Thumbs.db
+
+# Dumper Files  
+dumper.bat
+project_dump.txt
